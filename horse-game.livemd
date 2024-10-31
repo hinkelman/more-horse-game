@@ -1,0 +1,32 @@
+# Horse Game
+
+```elixir
+Mix.install([
+  {:kino, "~> 0.14.2"},
+  {:kino_explorer, "~> 0.1.23"}
+])
+```
+
+## Section
+
+```elixir
+require Explorer.DataFrame, as: DF
+require Explorer.Series, as: Series
+```
+
+```elixir
+rolls_df = 
+  DF.join(
+    DF.new(dice1: 1..6), 
+    DF.new(dice2: 1..6), how: :cross
+  )
+  |> DF.mutate(roll: dice1 + dice2) 
+  |> DF.group_by("roll") 
+  |> DF.summarise(n: Series.size(roll)) 
+  |> DF.put(:steps, Explorer.Series.from_list([3, 6, 8, 11, 14, 16, 14, 11, 8, 6, 3]))
+  |> DF.mutate(
+    prob: n/Series.sum(n),
+    prob_steps: steps/Series.sum(steps)
+  )
+
+```
