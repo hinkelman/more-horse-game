@@ -1,1 +1,1 @@
-# more-horse-game
+WIP. Scheme, Elixir, and Python code that reproduces the simulations in this [repo](https://github.com/hinkelman/horse-game).
