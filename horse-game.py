@@ -1,4 +1,5 @@
 import polars as pl
+import numpy as np
 
 d1 = pl.DataFrame({"dice1": range(1, 7)})
 d2 = pl.DataFrame({"dice2": range(1, 7)})
@@ -17,3 +18,6 @@ rolls_df = (
         (pl.col("n")/pl.col("n").sum()).alias("prob_steps")
     )
 )
+
+def roll(n, replace=True, rdf=rolls_df):
+    return np.random.choice(rolls_df["roll"], size=n, replace=replace, p=rolls_df["prob"])
