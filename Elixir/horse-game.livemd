@@ -7,26 +7,205 @@ Mix.install([
 ])
 ```
 
-## Section
+## Functions
 
 ```elixir
-require Explorer.DataFrame, as: DF
-require Explorer.Series, as: Series
+defmodule HorseGame do
+  require Explorer.DataFrame, as: DF
+  alias Explorer.Series
+
+  @horses Enum.to_list(2..12)
+
+  # number of board spaces for each horse (2–12)
+  @steps [3, 6, 8, 11, 14, 16, 14, 11, 8, 6, 3]
+  @steps_map Map.new(Enum.zip(@horses, @steps))
+
+  # number of the 36 dice combinations that give each roll (2–12)
+  @counts (for d1 <- 1..6, d2 <- 1..6, do: d1 + d2)
+          |> Enum.frequencies()
+          |> then(fn freq -> Enum.map(@horses, &freq[&1]) end)
+
+  @probs Enum.map(@counts, &(&1 / Enum.sum(@counts)))
+  @weighted Enum.zip(@horses, @probs)
+
+  @horse_colors %{
+    2 => "#a6cee3",
+    12 => "#1f78b4",
+    3 => "#b2df8a",
+    11 => "#33a02c",
+    4 => "#fb9a99",
+    10 => "#e31a1c",
+    5 => "#fdbf6f",
+    9 => "#ff7f00",
+    6 => "#cab2d6",
+    8 => "#6a3d9a",
+    7 => "#b15928"
+  }
+
+  def horses, do: @horses
+  def horse_colors, do: @horse_colors
+
+  def rolls_df do
+    DF.join(DF.new(dice1: 1..6), DF.new(dice2: 1..6), how: :cross)
+    |> DF.mutate(roll: dice1 + dice2)
+    |> DF.group_by("roll")
+    |> DF.summarise(n: size(roll))
+    # summarise does not preserve group order; sort before putting steps by position
+    |> DF.sort_by(roll)
+    |> DF.put(:steps, Series.from_list(@steps))
+    |> DF.mutate(prob: n / sum(n), prob_steps: steps / sum(steps))
+  end
+
+  def roll(n, replace \\ true, prob \\ @probs)
+
+  def roll(n, true, prob) do
+    weighted = Enum.zip(@horses, prob)
+    for _ <- 1..n//1, do: sample_one(weighted)
+  end
+
+  # weighted sampling without replacement: draw one, remove it, repeat
+  def roll(n, false, prob) when n <= 11 do
+    {picks, _} =
+      Enum.reduce(1..n//1, {[], Enum.zip(@horses, prob)}, fn _, {picks, weighted} ->
+        x = sample_one(weighted)
+        {[x | picks], List.keydelete(weighted, x, 0)}
+      end)
+
+    Enum.reverse(picks)
+  end
+
+  defp sample_one(weighted) do
+    total = weighted |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+    pick(weighted, :rand.uniform() * total)
+  end
+
+  defp pick([{x, _}], _target), do: x
+  defp pick([{x, p} | _rest], target) when target < p, do: x
+  defp pick([{_, p} | rest], target), do: pick(rest, target - p)
+
+  def get_kitty(base_value, scratches, rolls \\ []) do
+    # multiply by 4 for 4 suits in deck
+    init = 4 * base_value * (4 + 3 + 2 + 1)
+    # position in scratches (1-based) is the multiplier
+    mults = scratches |> Enum.with_index(1) |> Map.new()
+    init + (rolls |> Enum.map(&(Map.get(mults, &1, 0) * base_value)) |> Enum.sum())
+  end
+
+  # map of horse => remaining steps; scratched horses are nil
+  def get_steps_remain(scratches, rolls) do
+    counts = Enum.frequencies(rolls)
+
+    Map.new(@horses, fn h ->
+      {h, if(h in scratches, do: nil, else: @steps_map[h] - Map.get(counts, h, 0))}
+    end)
+  end
+
+  def sim_one_game(scratches, rolls, winner_only \\ true) do
+    active =
+      scratches
+      |> get_steps_remain(rolls)
+      |> Map.reject(fn {_, v} -> is_nil(v) end)
+
+    if Enum.any?(active, fn {_, v} -> v < 0 end) do
+      raise "Winner was already determined"
+    end
+
+    {winner, sim_rolls} = race(active, [])
+
+    if winner_only do
+      winner
+    else
+      %{winner: winner, rolls: rolls ++ sim_rolls}
+    end
+  end
+
+  # keep rolling until an active horse has 0 steps remaining
+  defp race(steps_remain, sim_rolls) do
+    case Enum.find(steps_remain, fn {_, v} -> v == 0 end) do
+      {winner, 0} ->
+        {winner, Enum.reverse(sim_rolls)}
+
+      nil ->
+        r = sample_one(@weighted)
+
+        steps_remain =
+          if Map.has_key?(steps_remain, r),
+            do: Map.update!(steps_remain, r, &(&1 - 1)),
+            else: steps_remain
+
+        race(steps_remain, [r | sim_rolls])
+    end
+  end
+
+  # simulates win probability from any point in game (based on rolls)
+  def sim_win_prob(scratches, rolls \\ [], n_sim \\ 1000) do
+    freq =
+      1..n_sim
+      |> Enum.map(fn _ -> sim_one_game(scratches, rolls) end)
+      |> Enum.frequencies()
+
+    Map.new(@horses, fn h -> {h, Map.get(freq, h, 0) / n_sim} end)
+  end
+
+  # returns winner and kitty; always starting at beginning of game
+  def sim_new_game(scratches, base_value \\ 0.25) do
+    %{winner: winner, rolls: rolls} = sim_one_game(scratches, [], false)
+    %{winner: winner, kitty: get_kitty(base_value, scratches, rolls)}
+  end
+end
 ```
 
 ```elixir
-rolls_df = 
-  DF.join(
-    DF.new(dice1: 1..6), 
-    DF.new(dice2: 1..6), how: :cross
-  )
-  |> DF.mutate(roll: dice1 + dice2) 
-  |> DF.group_by("roll") 
-  |> DF.summarise(n: Series.size(roll)) 
-  |> DF.put(:steps, Explorer.Series.from_list([3, 6, 8, 11, 14, 16, 14, 11, 8, 6, 3]))
-  |> DF.mutate(
-    prob: n/Series.sum(n),
-    prob_steps: steps/Series.sum(steps)
-  )
+HorseGame.rolls_df()
+```
 
+## Simulation
+
+```elixir
+require Explorer.DataFrame, as: DF
+
+n_reps = 100_000
+base_value = 0.25
+
+sim_list =
+  Task.async_stream(
+    1..n_reps,
+    fn _ -> HorseGame.sim_new_game(HorseGame.roll(4, false), base_value) end,
+    ordered: false
+  )
+  |> Enum.map(fn {:ok, sim} -> sim end)
+
+sim_df =
+  DF.new(
+    sim: 1..n_reps,
+    winner: Enum.map(sim_list, & &1.winner),
+    kitty: Enum.map(sim_list, & &1.kitty)
+  )
+```
+
+```elixir
+# order reflects paired probabilities
+winner_levels = Enum.reverse([2, 12, 3, 11, 4, 10, 5, 9, 6, 8, 7])
+levels_df = DF.new(winner: winner_levels, level: 0..10)
+
+winner_counts = sim_df |> DF.pull(:winner) |> Explorer.Series.to_list() |> Enum.frequencies()
+
+n = Enum.map(winner_levels, &Map.get(winner_counts, &1, 0))
+
+winners =
+  DF.new(
+    winner: winner_levels,
+    n: n,
+    percent: Enum.map(n, &Float.round(&1 / n_reps * 100, 2))
+  )
+```
+
+```elixir
+kitty_avg =
+  sim_df
+  |> DF.group_by(:winner)
+  |> DF.summarise(kitty_avg: mean(kitty))
+  |> DF.join(levels_df)
+  |> DF.sort_by(level)
+  |> DF.discard(:level)
 ```
